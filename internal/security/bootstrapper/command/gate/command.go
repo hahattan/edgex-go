@@ -40,6 +40,8 @@ type cmd struct {
 	waitGroup     *sync.WaitGroup
 	loggingClient logger.LoggingClient
 	config        *config.ConfigurationStruct
+	consul        bool
+	postgres      bool
 }
 
 // NewCommand creates a new cmd and parses through options if any
@@ -60,6 +62,8 @@ func NewCommand(
 
 	flagSet := flag.NewFlagSet(CommandName, flag.ContinueOnError)
 	flagSet.StringVar(&dummy, "confdir", "", "") // handled by bootstrap; duplicated here to prevent arg parsing errors
+	flagSet.BoolVar(&cmd.consul, "consul", false, "")
+	flagSet.BoolVar(&cmd.postgres, "postgres", false, "")
 
 	err := flagSet.Parse(args)
 	if err != nil {
@@ -84,25 +88,31 @@ func (c *cmd) Execute() (statusCode int, err error) {
 
 	// wait on for others to be done: each of tcp dialers is a blocking call
 	c.loggingClient.Debug("Waiting on dependent semaphores required to raise the ready-to-run semaphore ...")
-	if err := tcp.DialTcp(
-		c.config.StageGate.Registry.Host,
-		c.config.StageGate.Registry.ReadyPort,
-		c.loggingClient); err != nil {
-		retErr := fmt.Errorf("found error while waiting for readiness of Registry at %s:%d, err: %v",
-			c.config.StageGate.Registry.Host, c.config.StageGate.Registry.ReadyPort, err)
-		return interfaces.StatusCodeExitWithError, retErr
-	}
-	c.loggingClient.Info("Registry is ready")
+	c.loggingClient.Infof("[EdgeXpert] checking dependency - consul: %v, kong-db: %v, redis: true", c.consul, c.postgres)
 
-	if err := tcp.DialTcp(
-		c.config.StageGate.KongDB.Host,
-		c.config.StageGate.KongDB.ReadyPort,
-		c.loggingClient); err != nil {
-		retErr := fmt.Errorf("found error while waiting for readiness of KongDB at %s:%d, err: %v",
-			c.config.StageGate.KongDB.Host, c.config.StageGate.KongDB.ReadyPort, err)
-		return interfaces.StatusCodeExitWithError, retErr
+	if c.consul {
+		if err := tcp.DialTcp(
+			c.config.StageGate.Registry.Host,
+			c.config.StageGate.Registry.ReadyPort,
+			c.loggingClient); err != nil {
+			retErr := fmt.Errorf("found error while waiting for readiness of Registry at %s:%d, err: %v",
+				c.config.StageGate.Registry.Host, c.config.StageGate.Registry.ReadyPort, err)
+			return interfaces.StatusCodeExitWithError, retErr
+		}
+		c.loggingClient.Info("Registry is ready")
 	}
-	c.loggingClient.Info("KongDB is ready")
+
+	if c.postgres {
+		if err := tcp.DialTcp(
+			c.config.StageGate.KongDB.Host,
+			c.config.StageGate.KongDB.ReadyPort,
+			c.loggingClient); err != nil {
+			retErr := fmt.Errorf("found error while waiting for readiness of KongDB at %s:%d, err: %v",
+				c.config.StageGate.KongDB.Host, c.config.StageGate.KongDB.ReadyPort, err)
+			return interfaces.StatusCodeExitWithError, retErr
+		}
+		c.loggingClient.Info("KongDB is ready")
+	}
 
 	if err := tcp.DialTcp(
 		c.config.StageGate.Database.Host,
